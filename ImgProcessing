@@ -1,0 +1,787 @@
+using Emgu.CV;
+using Emgu.CV.CvEnum;
+using Emgu.CV.Structure;
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using System.Windows.Forms.DataVisualization.Charting;
+
+
+using Windows.Devices.Bluetooth.GenericAttributeProfile;
+using Windows.Devices.Enumeration;
+
+
+using MathWorks.MATLAB.NET.Arrays;
+using MathWorks.MATLAB.NET.Utility;
+using matlab_Readtxt;
+using ZedGraph;
+
+using System.Drawing.Drawing2D;
+
+namespace BLE_PAM
+{
+    public partial class ImgProcessing : Form
+    {
+        public DeviceInformationCollection m_Ble_Profile_List;
+        public GattDeviceService m_Ble_Service;
+        public IReadOnlyList<GattCharacteristic> m_Ble_Characteristic_List;
+
+        public short ax;
+        public short ay;
+        public short az;
+        public short gx;
+        public short gy;
+        public short gz;
+        public double acc_y, acc_x, acc_z;
+
+        public float a = 0.2f;
+        public double pitch = 0, roll = 0, yaw = 0;
+        public double temp;
+
+        public const String PETRONE_CUSTOM_SERVICE_UUID = "C320DF00-7891-11E5-8BCF-FEFF819CDC9F";
+
+        public ImgProcessing()
+        {
+            InitializeComponent();
+        }
+
+        public async void TransferBleCommand(byte[] cmd)
+        {
+
+            m_Ble_Profile_List = await DeviceInformation.FindAllAsync(GattDeviceService.GetDeviceSelectorFromUuid(new Guid(PETRONE_CUSTOM_SERVICE_UUID)));
+            m_Ble_Service = await GattDeviceService.FromIdAsync(m_Ble_Profile_List[Petrone_List.SelectedIndex].Id);
+            m_Ble_Characteristic_List = m_Ble_Service.GetAllCharacteristics();
+            await m_Ble_Characteristic_List[0].WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.Notify);
+            // m_Ble_Characteristic_List[0] is C32DF01
+            // m_Ble_Characteristic_List[1] is C32DF02
+            if (m_Ble_Characteristic_List != null)
+                await m_Ble_Characteristic_List[1].WriteValueAsync(cmd.AsBuffer(), GattWriteOption.WriteWithoutResponse);
+
+            // check Rootin : Flag Petrone Busy 
+            // Timer
+        }
+
+        public async void TransferBleNotifyCommand(byte[] cmd)
+        {
+            m_Ble_Profile_List = await DeviceInformation.FindAllAsync(GattDeviceService.GetDeviceSelectorFromUuid(new Guid(PETRONE_CUSTOM_SERVICE_UUID)));
+            m_Ble_Service = await GattDeviceService.FromIdAsync(m_Ble_Profile_List[Petrone_List.SelectedIndex].Id);
+            m_Ble_Characteristic_List = m_Ble_Service.GetAllCharacteristics();
+            await m_Ble_Characteristic_List[0].WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.Notify);
+            // m_Ble_Characteristic_List[0] is C32DF01
+            // m_Ble_Characteristic_List[1] is C32DF02
+            if (m_Ble_Characteristic_List != null)
+            {
+                await m_Ble_Characteristic_List[1].WriteValueAsync(cmd.AsBuffer(), GattWriteOption.WriteWithResponse);
+            }
+        }
+
+        private void ImgProcessing_Load(object sender, EventArgs e)
+        {
+            
+        }
+
+        private class Petrone_List
+        {
+            public static int SelectedIndex { get; internal set; }
+        }
+
+        //영상처리 시작
+                
+        Capture Source;
+        Mat src; // source 저장, 및 HSV 변환을 위한 Mat
+        //동영상 측정값
+        // 녹색 분리를 위한 min max
+        Hsv hsv_green_min = new Hsv(45, 105, 30);
+        Hsv hsv_green_max = new Hsv(90, 255, 100);
+        // 빨강/주항 분리를 위한 min max
+        Hsv hsv_red_min = new Hsv(0, 0, 30);
+        Hsv hsv_red_max = new Hsv(20, 50, 180);
+       Hsv hsv_red_minU = new Hsv(170, 0, 30);
+       Hsv hsv_red_maxU = new Hsv(179, 50, 180);
+
+        /*
+         * Hsv hsv_red_min = new Hsv(0, 0, 30);
+        Hsv hsv_red_max = new Hsv(20, 50, 180);
+        Hsv hsv_red_minU = new Hsv(170, 0, 30);
+        Hsv hsv_red_maxU = new Hsv(179, 50, 180);
+        */
+        // 파랑 분리를 위한 min max
+        Hsv hsv_blue_min = new Hsv(90, 0, 0);
+        Hsv hsv_blue_max = new Hsv(120, 100, 40);        
+
+        // 노랑 분리를 위한 min max
+        Hsv hsv_yellow_min = new Hsv(20, 60, 100);
+        Hsv hsv_yellow_max = new Hsv(60, 255, 255);        
+
+        // 분홍 분리를 위한 min max
+        Hsv hsv_pink_min = new Hsv(150, 150, 100);
+        Hsv hsv_pink_max = new Hsv(155, 255, 150);
+
+        /* 작년 대회 설정
+        Hsv hsv_green_min = new Hsv(45, 50, 30);
+        Hsv hsv_green_max = new Hsv(95, 255, 100);                 
+        Hsv hsv_blue_min = new Hsv(100, 55, 30);
+        Hsv hsv_blue_max = new Hsv(140, 255, 180);        
+        Hsv hsv_yellow_min = new Hsv(8, 100, 150);
+        Hsv hsv_yellow_max = new Hsv(25, 255, 255); */
+
+        public static DateTime Delay(int MS)
+        {
+            DateTime ThisMoment = DateTime.Now;
+            TimeSpan duration = new TimeSpan(0, 0, 0, 0, MS);
+            DateTime AfterWards = ThisMoment.Add(duration);
+
+            while (AfterWards >= ThisMoment)
+            {
+                System.Windows.Forms.Application.DoEvents();
+                ThisMoment = DateTime.Now;
+            }
+
+            return DateTime.Now;
+        }
+
+        // 호버링 후 영상처리
+        private void ProcessingFlying_Click(object sender, EventArgs e)
+        {
+           TransferBleCommand(new byte[] { (byte)DataType.Command, (byte)CommandType.ModePetrone, (byte)ModePetrone.FlightFPV });
+            //Source = new Capture(@"runtest.mp4");
+            Source = new Capture(@"rtsp://192.168.100.1/cam1/mpeg4");
+            
+            Application.Idle += ImagProcessingFlying;
+
+            Delay(500);
+
+            TransferBleCommand(new byte[] { (byte)DataType.Command, (byte)CommandType.ModePetrone, (byte)ModePetrone.FlightFPV });
+            Delay(500);
+            TransferBleCommand(new byte[] { 0x10, 0, 0, 0, 41 });
+            Delay(3000);
+            
+        }
+
+        private void ProcessingPause_Click(object sender, EventArgs e)
+        {
+            Application.Idle -= ImagProcessingFlying;
+            TransferBleCommand(new byte[] { (byte)DataType.Command, (byte)CommandType.FlightEvent, (byte)FlightEvent.Landing });
+        }
+
+        int count1 = 0;
+        int count2 = 0;
+
+        private void btnStop_Click(object sender, EventArgs e)
+        {
+            TransferBleCommand(new byte[] { (byte)DataType.Command, (byte)CommandType.FlightEvent, (byte)FlightEvent.Stop });
+        }
+
+        private void radioButton1_CheckedChanged(object sender, EventArgs e)
+        {
+
+        }
+
+        private void btnlan_Click(object sender, EventArgs e)
+        {
+            TransferBleCommand(new byte[] { (byte)DataType.Command, (byte)CommandType.ModePetrone, (byte)ModePetrone.FlightFPV });
+            Delay(500);
+            TransferBleCommand(new byte[] { 0x10, 0, 0, 0, 41 });
+            Delay(3000);
+                  }
+
+        public void ImagProcessingFlying(object sender, EventArgs e)
+        {
+            int mBlurParam = 10;
+            int mCannyParam = 20;
+            double cannyThreshold = 180.0;
+            double cannyThresholdLinking = 120.0;
+
+            //영상 불러오기
+            var mat = Source.QueryFrame();
+            if (mat == null)
+                return;
+
+            //var OriginalImage = mat.ToImage<Bgr, Byte>();
+            var BgrOImage = mat.ToImage<Bgr, Byte>();
+            //imageBox1.Image = BgrOImage;
+
+            //RGB(BGR) -> HSV 
+            var HsvOImage = mat.ToImage<Hsv, Byte>();
+            //imageBox2.Image = HsvOImage;
+
+            //Gaussian Bluring            
+            var BlurImage = HsvOImage.SmoothBlur(mBlurParam, mBlurParam);
+            //imageBox3.Image = BlurImage;
+
+            //각각의 색상 추출
+            Image<Gray, Byte> greenDest = HsvOImage.InRange(hsv_green_min, hsv_green_max);
+            //imageBox4.Image = greenDest;
+            Image<Gray, Byte> redDest = HsvOImage.InRange(hsv_red_min, hsv_red_max);
+            Image<Gray, Byte> redDestU = HsvOImage.InRange(hsv_red_minU, hsv_red_maxU);
+            Image<Gray, Byte> redDestSum = redDest + redDestU;
+            //imageBox5.Image = redDestSum;
+            //Image<Gray, Byte> blueDest = HsvOImage.InRange(hsv_blue_min, hsv_blue_max);
+            //Image<Gray, Byte> yellowDest = HsvOImage.InRange(hsv_yellow_min, hsv_yellow_max);
+            //Image<Gray, Byte> pinkDest = HsvOImage.InRange(hsv_pink_min, hsv_pink_max);
+            //Image<Gray, Byte> orangeDest = HsvOImage.InRange(hsv_orange_min, hsv_orange_max);
+
+            // 원본과 흑백 영상
+            var black = mat.ToImage<Gray, Byte>();
+            var color = mat.ToImage<Bgr, Byte>();
+            var Origin_green = black.CopyBlank();
+            var Origin_red = black.CopyBlank();
+            //var Origin_blue = black.CopyBlank();
+            //var Oringin_yellow = black.CopyBlank();
+            //var Origin_pink = black.CopyBlank();
+            //var Origin_orange = black.CopyBlank();
+
+            redDestSum._Dilate(15);
+            redDestSum._Erode(15);
+            //redDest._Dilate(15);
+            //redDest._Erode(15);
+            UMat pyrDown = new UMat();
+            CvInvoke.PyrDown(redDestSum, pyrDown);
+            CvInvoke.PyrUp(pyrDown, redDestSum);
+            Image<Gray, Byte> redDestSum_con = redDestSum.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            
+            greenDest._Dilate(15);
+            greenDest._Erode(15);
+            CvInvoke.PyrDown(greenDest, pyrDown);
+            CvInvoke.PyrUp(pyrDown, greenDest);
+            Image<Gray, Byte> greenDest_con = greenDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            /*
+            blueDest._Dilate(15);
+            blueDest._Erode(15);
+            CvInvoke.PyrDown(blueDest, pyrDown);
+            CvInvoke.PyrUp(pyrDown, blueDest);
+            Image<Gray, Byte> blueDest_con = blueDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            */
+            //yellowDest._Dilate(15);
+            //yellowDest._Erode(15);
+            //CvInvoke.PyrDown(yellowDest, pyrDown);
+            //CvInvoke.PyrUp(pyrDown, yellowDest);
+            //Image<Gray, Byte> yellowDest_con = yellowDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            /*
+            pinkDest._Dilate(15);
+            pinkDest._Erode(15);
+            CvInvoke.PyrDown(pinkDest, pyrDown);
+            CvInvoke.PyrUp(pyrDown, pinkDest);
+            Image<Gray, Byte> pinkDest_con = pinkDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+
+            //orangeDest._Dilate(15);
+            //orangeDest._Erode(15);
+            /CvInvoke.PyrDown(orangeDest, pyrDown);
+            CvInvoke.PyrUp(pyrDown, orangeDest);
+            Image<Gray, Byte> orangeDest_con = orangeDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            imageBox6.Image = greenDest_con;
+            imageBox7.Image = redDestSum_con;
+            */
+            UMat cannyEdges_green = new UMat();
+            UMat cannyEdges_red = new UMat();
+            //UMat cannyEdges_blue = new UMat();
+            //UMat cannyEdges_yellow = new UMat();
+            //UMat cannyEdges_pink = new UMat();
+            //UMat cannyEdges_orange = new UMat();
+            Image<Bgr, Byte> lineImage_green_Line = color.CopyBlank();
+            Image<Bgr, Byte> lineImage_red_Line = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_blue_Line = color.CopyBlank();
+            Image<Bgr, Byte> lineImage_green = color.CopyBlank();
+            Image<Bgr, Byte> lineImage_red = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_blue = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_yellow_Line = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_yellow = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_pink_Line = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_pink = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_orange_Line = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_orange = color.CopyBlank();
+
+            //각각의 선 검출
+            CvInvoke.Canny(greenDest_con, cannyEdges_green, cannyThreshold, cannyThresholdLinking);
+            LineSegment2D[] lines_green = CvInvoke.HoughLinesP(cannyEdges_green, 1, Math.PI / 45.0, 50, 50, 100);
+
+            CvInvoke.Canny(redDestSum_con, cannyEdges_red, cannyThreshold, cannyThresholdLinking);
+            LineSegment2D[] lines_red = CvInvoke.HoughLinesP(cannyEdges_red, 1, Math.PI / 45.0, 50, 50, 100);
+
+            //CvInvoke.Canny(blueDest_con, cannyEdges_blue, cannyThreshold, cannyThresholdLinking);
+            //LineSegment2D[] lines_blue = CvInvoke.HoughLinesP(cannyEdges_blue, 1, Math.PI / 45.0, 50, 50, 100);
+
+            //CvInvoke.Canny(yellowDest_con, cannyEdges_yellow, cannyThreshold, cannyThresholdLinking);
+            //LineSegment2D[] lines_yellow = CvInvoke.HoughLinesP(cannyEdges_yellow, 1, Math.PI / 45.0, 50, 50, 100);
+
+            //CvInvoke.Canny(pinkDest_con, cannyEdges_pink, cannyThreshold, cannyThresholdLinking);
+            //LineSegment2D[] lines_pink = CvInvoke.HoughLinesP(cannyEdges_pink, 1, Math.PI / 45.0, 50, 50, 100);
+
+            // CvInvoke.Canny(orangeDest_con, cannyEdges_orange, cannyThreshold, cannyThresholdLinking);
+            //LineSegment2D[] lines_orange = CvInvoke.HoughLinesP(cannyEdges_orange, 1, Math.PI / 45.0, 50, 50, 100);
+
+            //길이 비교에 따른 선 추출
+            
+            LineSegment2D Long_green = new LineSegment2D();
+            foreach (LineSegment2D line in lines_green)
+            {
+                LineSegment2D Long_line = line;
+                if (Long_line.Length > Long_green.Length)
+                    Long_green = Long_line;
+            }
+            lineImage_green_Line.Draw(Long_green, new Bgr(Color.Green), 6);
+            
+            LineSegment2D Long_red = new LineSegment2D();
+            foreach (LineSegment2D line in lines_red)
+            {
+                LineSegment2D Long_line = line;
+                if (Long_line.Length > Long_red.Length)
+                    Long_red = Long_line;
+            }
+            lineImage_red_Line.Draw(Long_red, new Bgr(Color.Red), 6);
+            //imageBox8.Image = lineImage_green_Line;
+            //imageBox9.Image = lineImage_red_Line;
+            /*
+            LineSegment2D Long_blue = new LineSegment2D();
+            foreach (LineSegment2D line in lines_blue)
+            {
+                LineSegment2D Long_line = line;
+                if (Long_line.Length > Long_blue.Length)
+                    Long_blue = Long_line;
+            }
+            lineImage_blue_Line.Draw(Long_blue, new Bgr(Color.Blue), 6);*/
+
+            //LineSegment2D Long_yellow = new LineSegment2D();
+            //foreach (LineSegment2D line in lines_yellow)
+            //{
+            //    LineSegment2D Long_line = line;
+            //    if (Long_line.Length > Long_yellow.Length)
+            //        Long_yellow = Long_line;
+            //}
+            //lineImage_yellow_Line.Draw(Long_yellow, new Bgr(Color.Yellow), 6);
+            /*
+           LineSegment2D Long_pink = new LineSegment2D();
+           foreach (LineSegment2D line in lines_pink)
+           {
+               LineSegment2D Long_line = line;
+               if (Long_line.Length > Long_pink.Length)
+                   Long_pink = Long_line;
+           }
+           lineImage_pink_Line.Draw(Long_pink, new Bgr(Color.HotPink), 6);
+
+           // LineSegment2D Long_orange = new LineSegment2D();
+           // foreach (LineSegment2D line in lines_orange)
+           // {
+           //     LineSegment2D Long_line = line;
+           //    if (Long_line.Length > Long_orange.Length)
+           //         Long_orange = Long_line;
+           // }
+           //lineImage_orange_Line.Draw(Long_orange, new Bgr(Color.Orange), 6);
+           */
+            // 미분을 통한 각도 표시
+            double dx_green = Long_green.P2.X - Long_green.P1.X;
+            double dy_green = Long_green.P2.Y - Long_green.P1.Y;
+            double slope_green = Math.Atan2(dy_green, dx_green);
+            int angle_green = (int)(Math.Abs(slope_green * 180) / Math.PI);
+
+            double dx_red = Long_red.P2.X - Long_red.P1.X;
+            double dy_red = Long_red.P2.Y - Long_red.P1.Y;
+            double slope_red = Math.Atan2(dy_red, dx_red);
+            int angle_red = (int)(Math.Abs(slope_red * 180) / Math.PI);
+
+            //double dx_blue = Long_blue.P2.X - Long_blue.P1.X;
+            //double dy_blue = Long_blue.P2.Y - Long_blue.P1.X;
+            //double slope_blue = Math.Atan2(dy_blue, dx_blue);
+            //int angle_blue = (int)(Math.Abs(slope_blue * 180) / Math.PI);
+
+            //double dx_yellow = Long_yellow.P2.X - Long_yellow.P1.X;
+            //double dy_yellow = Long_yellow.P2.Y - Long_yellow.P1.X;
+            //double slope_yellow = Math.Atan2(dy_yellow, dx_yellow);
+            //int angle_yellow = (int)(Math.Abs(slope_yellow * 180) / Math.PI);
+
+            //double dx_pink = Long_pink.P2.X - Long_pink.P1.X;
+            //double dy_pink = Long_pink.P2.Y - Long_pink.P1.X;
+            //double slope_pink = Math.Atan2(dy_pink, dx_pink);
+            //int angle_pink = (int)(Math.Abs(slope_pink * 180) / Math.PI);
+
+            // double dx_orange = Long_orange.P2.X - Long_orange.P1.X;
+            // double dy_orange = Long_orange.P2.Y - Long_orange.P1.X;
+            // double slope_orange = Math.Atan2(dy_orange, dx_orange);
+            // int angle_orange = (int)(Math.Abs(slope_orange * 180) / Math.PI);
+
+            //형광초록
+            CvInvoke.PutText(lineImage_green, Convert.ToString(angle_green), new Point((int)(dx_green / 2 + Long_green.P1.X), 
+                (int)(dy_green / 2 + Long_green.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.Green).MCvScalar);
+            lineImage_green.Draw(Long_green, new Bgr(Color.Green), 2);
+
+            //블루(시험)
+            //CvInvoke.PutText(lineImage_blue, Convert.ToString(angle_blue), new Point((int)(dx_blue / 2 + Long_blue.P1.X), 
+            //    (int)(dy_blue / 2 + Long_blue.P1.Y)), FontFace.HersheyComplex, 1.5, new Bgr(Color.CadetBlue).MCvScalar);
+            //lineImage_blue.Draw(Long_blue, new Bgr(Color.CadetBlue), 2);
+
+            //레드/조황
+            CvInvoke.PutText(lineImage_red, Convert.ToString(angle_red), new Point((int)(dx_red / 2 + Long_red.P1.X),
+                (int)(dy_red / 2 + Long_red.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.Red).MCvScalar);
+            lineImage_red.Draw(Long_red, new Bgr(Color.Red), 2);
+
+            //형광분홍
+            //CvInvoke.PutText(lineImage_pink, Convert.ToString(angle_pink), new Point((int)(dx_pink / 2 + Long_pink.P1.X), 
+            //    (int)(dy_pink / 2 + Long_pink.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.HotPink).MCvScalar);
+            //lineImage_pink.Draw(Long_pink, new Bgr(Color.HotPink), 2);
+
+            //형광노랑
+            //CvInvoke.PutText(lineImage_yellow, Convert.ToString(angle_yellow), new Point((int)(dx_yellow / 2 + Long_yellow.P1.X),
+            //   (int)(dy_yellow / 2 + Long_yellow.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.Yellow).MCvScalar);
+            //lineImage_yellow.Draw(Long_yellow, new Bgr(Color.Yellow), 2);
+
+            //형광주황
+            //CvInvoke.PutText(lineImage_orange, Convert.ToString(angle_orange), new Point((int)(dx_orange / 2 + Long_orange.P1.X),
+            //    (int)(dy_orange / 2 + Long_orange.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.Orange).MCvScalar);
+            //lineImage_orange.Draw(Long_orange, new Bgr(Color.OrangeRed), 2);
+
+            //imageBox10.Image = lineImage_green;
+            //imageBox11.Image = lineImage_red;
+            //imageBox1.Image = lineImage_red + lineImage_green + lineImage_blue + lineImage_pink + lineImage_yellow+ BgrOImage;
+            //imageBox1.Image = lineImage_red + lineImage_green + BgrOImage;
+
+            int radian = 90;
+            
+            //각도에 따른 동작 설정
+            if (Convert.ToInt32(angle_green) >= 65)
+            {
+                count1++;
+                if (count1 == 2)
+                {
+                    TransferBleCommand(new byte[] { 0x10, 0, 10, 0, 0 });
+                }
+                
+                if (count1 == 4)
+                {
+                    TransferBleCommand(new byte[] { 0x10, 0, 0, 0, 0 });
+                    count1 = 0;
+                }
+            }
+            else if (Convert.ToInt32(angle_green) < 65)
+            {
+                count2++;
+                if (count2 == 2)
+                {
+                    TransferBleCommand(new byte[] { 0x10, 0, 0, 50, 0 });
+                    count2 = 0;
+                }
+            }
+            else
+            {
+            }
+            if (angle_red >= 10)
+            {
+                TransferBleCommand(new byte[] { (byte)DataType.Command, (byte)CommandType.FlightEvent, (byte)FlightEvent.Landing });
+            }
+            
+        }            
+
+        // 페트론 카메라를 이용하여 촬영한 영상을 영상처리 하여 출력
+        private void btnImgProcessing_Click_1(object sender, EventArgs e)
+        {
+            if (radioButton1.Checked)
+                Source = new Capture(@"test1.mp4");
+            if (radioButton2.Checked)
+                Source = new Capture(@"rtsp://192.168.100.1/cam1/mpeg4");
+
+            Application.Idle += ImagProcessing;            
+        }
+
+        private void btnPause_Click_1(object sender, EventArgs e)
+        {
+            Application.Idle -= ImagProcessing;
+            TransferBleCommand(new byte[] { (byte)DataType.Command, (byte)CommandType.FlightEvent, (byte)FlightEvent.Landing });
+        }          
+
+        public void ImagProcessing(object sender, EventArgs e)
+        {
+            int mBlurParam = 10;
+            int mCannyParam = 20;
+            double cannyThreshold = 180.0;
+            double cannyThresholdLinking = 120.0;
+
+            //영상 불러오기
+            var mat = Source.QueryFrame();
+            if (mat == null)
+                return;
+
+            //var OriginalImage = mat.ToImage<Bgr, Byte>();
+            var BgrOImage = mat.ToImage<Bgr, Byte>();
+            //imageBox2.Image = BgrOImage;
+
+            //RGB(BGR) -> HSV 
+            var HsvOImage = mat.ToImage<Hsv, Byte>();
+            //imageBox2.Image = HsvOImage;
+
+            //Gaussian Bluring            
+            var BlurImage = HsvOImage.SmoothBlur(mBlurParam, mBlurParam);
+            //imageBox3.Image = BlurImage;
+
+            //각각의 색상 추출
+            Image<Gray, Byte> greenDest = HsvOImage.InRange(hsv_green_min, hsv_green_max);
+            //imageBox4.Image = greenDest;
+            Image<Gray, Byte> redDest = HsvOImage.InRange(hsv_red_min, hsv_red_max);
+            //Image<Gray, Byte> redDestU = HsvOImage.InRange(hsv_red_minU, hsv_red_maxU);
+            //Image<Gray, Byte> redDestSum = redDest + redDestU;
+            //imageBox5.Image = redDestSum;
+            //Image<Gray, Byte> blueDest = HsvOImage.InRange(hsv_blue_min, hsv_blue_max);
+            //Image<Gray, Byte> yellowDest = HsvOImage.InRange(hsv_yellow_min, hsv_yellow_max);
+            //Image<Gray, Byte> pinkDest = HsvOImage.InRange(hsv_pink_min, hsv_pink_max);*/
+            //Image<Gray, Byte> orangeDest = HsvOImage.InRange(hsv_orange_min, hsv_orange_max);
+
+            // 원본과 흑백 영상
+            var black = mat.ToImage<Gray, Byte>();
+            var color = mat.ToImage<Bgr, Byte>();
+            var Origin_green = black.CopyBlank();
+            var Origin_red = black.CopyBlank();
+            //var Origin_blue = black.CopyBlank();
+            //var Oringin_yellow = black.CopyBlank();
+            //var Origin_pink = black.CopyBlank();
+            //var Origin_orange = black.CopyBlank();
+
+            //redDestSum._Dilate(15);
+            //redDestSum._Erode(15);
+            redDest._Dilate(15);
+            redDest._Erode(15);
+            UMat pyrDown = new UMat();
+            //CvInvoke.PyrDown(redDestSum, pyrDown);
+            //CvInvoke.PyrUp(pyrDown, redDestSum);
+            CvInvoke.PyrDown(redDest, pyrDown);
+            CvInvoke.PyrUp(pyrDown, redDest);
+            //Image<Gray, Byte> redDestSum_con = redDestSum.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            Image<Gray, Byte> redDestSum_con = redDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+
+            greenDest._Dilate(15);
+            greenDest._Erode(15);
+            CvInvoke.PyrDown(greenDest, pyrDown);
+            CvInvoke.PyrUp(pyrDown, greenDest);
+            Image<Gray, Byte> greenDest_con = greenDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            /*
+            blueDest._Dilate(15);
+            blueDest._Erode(15);
+            CvInvoke.PyrDown(blueDest, pyrDown);
+            CvInvoke.PyrUp(pyrDown, blueDest);
+            Image<Gray, Byte> blueDest_con = blueDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            */
+            //yellowDest._Dilate(15);
+            //yellowDest._Erode(15);
+            //CvInvoke.PyrDown(yellowDest, pyrDown);
+            //CvInvoke.PyrUp(pyrDown, yellowDest);
+            //Image<Gray, Byte> yellowDest_con = yellowDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            /*
+            pinkDest._Dilate(15);
+            pinkDest._Erode(15);
+            CvInvoke.PyrDown(pinkDest, pyrDown);
+            CvInvoke.PyrUp(pyrDown, pinkDest);
+            Image<Gray, Byte> pinkDest_con = pinkDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);*/
+
+            //orangeDest._Dilate(15);
+            //orangeDest._Erode(15);
+            //CvInvoke.PyrDown(orangeDest, pyrDown);
+            //CvInvoke.PyrUp(pyrDown, orangeDest);
+            //Image<Gray, Byte> orangeDest_con = orangeDest.SmoothBlur(mBlurParam, mBlurParam).Canny(mCannyParam, mCannyParam);
+            //imageBox6.Image = greenDest_con;
+            //imageBox7.Image = redDestSum_con;
+
+            UMat cannyEdges_green = new UMat();
+            UMat cannyEdges_red = new UMat();
+            //UMat cannyEdges_blue = new UMat();
+            //UMat cannyEdges_yellow = new UMat();
+            //UMat cannyEdges_pink = new UMat();
+            //UMat cannyEdges_orange = new UMat();
+            Image<Bgr, Byte> lineImage_green_Line = color.CopyBlank();
+            Image<Bgr, Byte> lineImage_red_Line = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_blue_Line = color.CopyBlank();
+            Image<Bgr, Byte> lineImage_green = color.CopyBlank();
+            Image<Bgr, Byte> lineImage_red = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_blue = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_yellow_Line = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_yellow = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_pink_Line = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_pink = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_orange_Line = color.CopyBlank();
+            //Image<Bgr, Byte> lineImage_orange = color.CopyBlank();*/
+
+            //각각의 선 검출
+            CvInvoke.Canny(greenDest_con, cannyEdges_green, cannyThreshold, cannyThresholdLinking);
+            LineSegment2D[] lines_green = CvInvoke.HoughLinesP(cannyEdges_green, 1, Math.PI / 45.0, 50, 50, 100);
+
+            CvInvoke.Canny(redDestSum_con, cannyEdges_red, cannyThreshold, cannyThresholdLinking);
+            LineSegment2D[] lines_red = CvInvoke.HoughLinesP(cannyEdges_red, 1, Math.PI / 45.0, 50, 50, 100);
+
+            /*CvInvoke.Canny(blueDest_con, cannyEdges_blue, cannyThreshold, cannyThresholdLinking);
+            LineSegment2D[] lines_blue = CvInvoke.HoughLinesP(cannyEdges_blue, 1, Math.PI / 45.0, 50, 50, 100);
+            */
+            //CvInvoke.Canny(yellowDest_con, cannyEdges_yellow, cannyThreshold, cannyThresholdLinking);
+            //LineSegment2D[] lines_yellow = CvInvoke.HoughLinesP(cannyEdges_yellow, 1, Math.PI / 45.0, 50, 50, 100);
+            /*
+            CvInvoke.Canny(pinkDest_con, cannyEdges_pink, cannyThreshold, cannyThresholdLinking);
+            LineSegment2D[] lines_pink = CvInvoke.HoughLinesP(cannyEdges_pink, 1, Math.PI / 45.0, 50, 50, 100);
+
+            // CvInvoke.Canny(orangeDest_con, cannyEdges_orange, cannyThreshold, cannyThresholdLinking);
+            //LineSegment2D[] lines_orange = CvInvoke.HoughLinesP(cannyEdges_orange, 1, Math.PI / 45.0, 50, 50, 100);
+            */
+            //길이 비교에 따른 선 추출
+            LineSegment2D Long_green = new LineSegment2D();
+            foreach (LineSegment2D line in lines_green)
+            {
+                LineSegment2D Long_line = line;
+                if (Long_line.Length > Long_green.Length)
+                    Long_green = Long_line;
+            }
+            lineImage_green_Line.Draw(Long_green, new Bgr(Color.Green), 6);
+
+            LineSegment2D Long_red = new LineSegment2D();
+            foreach (LineSegment2D line in lines_red)
+            {
+                LineSegment2D Long_line = line;
+                if (Long_line.Length > Long_red.Length)
+                    Long_red = Long_line;
+            }
+            lineImage_red_Line.Draw(Long_red, new Bgr(Color.Red), 6);
+            //imageBox8.Image = lineImage_green_Line;
+            //imageBox9.Image = lineImage_red_Line;
+
+            /*LineSegment2D Long_blue = new LineSegment2D();
+            foreach (LineSegment2D line in lines_blue)
+            {
+                LineSegment2D Long_line = line;
+                if (Long_line.Length > Long_blue.Length)
+                    Long_blue = Long_line;
+            }
+            lineImage_blue_Line.Draw(Long_blue, new Bgr(Color.Blue), 6);
+            */
+            //LineSegment2D Long_yellow = new LineSegment2D();
+            //foreach (LineSegment2D line in lines_yellow)
+            //{
+            //    LineSegment2D Long_line = line;
+            //    if (Long_line.Length > Long_yellow.Length)
+            //        Long_yellow = Long_line;
+            //}
+            //lineImage_yellow_Line.Draw(Long_yellow, new Bgr(Color.Yellow), 6);
+            /*
+            LineSegment2D Long_pink = new LineSegment2D();
+            foreach (LineSegment2D line in lines_pink)
+            {
+                LineSegment2D Long_line = line;
+                if (Long_line.Length > Long_pink.Length)
+                    Long_pink = Long_line;
+            }
+            lineImage_pink_Line.Draw(Long_pink, new Bgr(Color.HotPink), 6);
+
+            // LineSegment2D Long_orange = new LineSegment2D();
+            // foreach (LineSegment2D line in lines_orange)
+            // {
+            //     LineSegment2D Long_line = line;
+            //    if (Long_line.Length > Long_orange.Length)
+            //         Long_orange = Long_line;
+            // }
+            //lineImage_orange_Line.Draw(Long_orange, new Bgr(Color.Orange), 6);
+            */
+            // 미분을 통한 각도 표시
+            double dx_green = Long_green.P2.X - Long_green.P1.X;
+            double dy_green = Long_green.P2.Y - Long_green.P1.Y;
+            double slope_green = Math.Atan2(dy_green, dx_green);
+            int angle_green = (int)(Math.Abs(slope_green * 180) / Math.PI);
+
+            double dx_red = Long_red.P2.X - Long_red.P1.X;
+            double dy_red = Long_red.P2.Y - Long_red.P1.Y;
+            double slope_red = Math.Atan2(dy_red, dx_red);
+            int angle_red = (int)(Math.Abs(slope_red * 180) / Math.PI);
+
+            /*double dx_blue = Long_blue.P2.X - Long_blue.P1.X;
+            double dy_blue = Long_blue.P2.Y - Long_blue.P1.X;
+            double slope_blue = Math.Atan2(dy_blue, dx_blue);
+            int angle_blue = (int)(Math.Abs(slope_blue * 180) / Math.PI);
+            */
+            //double dx_yellow = Long_yellow.P2.X - Long_yellow.P1.X;
+            //double dy_yellow = Long_yellow.P2.Y - Long_yellow.P1.X;
+            //double slope_yellow = Math.Atan2(dy_yellow, dx_yellow);
+            //int angle_yellow = (int)(Math.Abs(slope_yellow * 180) / Math.PI);
+            /*
+            double dx_pink = Long_pink.P2.X - Long_pink.P1.X;
+            double dy_pink = Long_pink.P2.Y - Long_pink.P1.X;
+            double slope_pink = Math.Atan2(dy_pink, dx_pink);
+            int angle_pink = (int)(Math.Abs(slope_pink * 180) / Math.PI);
+
+            // double dx_orange = Long_orange.P2.X - Long_orange.P1.X;
+            // double dy_orange = Long_orange.P2.Y - Long_orange.P1.X;
+            // double slope_orange = Math.Atan2(dy_orange, dx_orange);
+            // int angle_orange = (int)(Math.Abs(slope_orange * 180) / Math.PI);*/
+
+            //형광초록
+            CvInvoke.PutText(lineImage_green, Convert.ToString(angle_green), new Point((int)(dx_green / 2 + Long_green.P1.X), 
+                (int)(dy_green / 2 + Long_green.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.Yellow).MCvScalar);
+            lineImage_green.Draw(Long_green, new Bgr(Color.Yellow), 2);
+
+            //블루(시험)
+            //CvInvoke.PutText(lineImage_blue, Convert.ToString(angle_blue), new Point((int)(dx_blue / 2 + Long_blue.P1.X), 
+            //    (int)(dy_blue / 2 + Long_blue.P1.Y)), FontFace.HersheyComplex, 1.5, new Bgr(Color.CadetBlue).MCvScalar);
+            //lineImage_blue.Draw(Long_blue, new Bgr(Color.CadetBlue), 2);
+
+            //레드/조황
+            CvInvoke.PutText(lineImage_red, Convert.ToString(angle_red), new Point((int)(dx_red / 2 + Long_red.P1.X),
+                (int)(dy_red / 2 + Long_red.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.Red).MCvScalar);
+            lineImage_red.Draw(Long_red, new Bgr(Color.Red), 2);
+
+            //형광분홍
+            //CvInvoke.PutText(lineImage_pink, Convert.ToString(angle_pink), new Point((int)(dx_pink / 2 + Long_pink.P1.X), 
+            //    (int)(dy_pink / 2 + Long_pink.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.HotPink).MCvScalar);
+            //lineImage_pink.Draw(Long_pink, new Bgr(Color.HotPink), 2);
+
+            //형광노랑
+            //CvInvoke.PutText(lineImage_yellow, Convert.ToString(angle_yellow), new Point((int)(dx_yellow / 2 + Long_yellow.P1.X),
+            //   (int)(dy_yellow / 2 + Long_yellow.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.Yellow).MCvScalar);
+            //lineImage_yellow.Draw(Long_yellow, new Bgr(Color.Yellow), 2);
+
+            //형광주황
+            //CvInvoke.PutText(lineImage_orange, Convert.ToString(angle_orange), new Point((int)(dx_orange / 2 + Long_orange.P1.X),
+            //    (int)(dy_orange / 2 + Long_orange.P1.Y)), FontFace.HersheyComplex, 1.0, new Bgr(Color.Orange).MCvScalar);
+            //lineImage_orange.Draw(Long_orange, new Bgr(Color.OrangeRed), 2);
+
+            //imageBox10.Image = lineImage_green;
+            //imageBox11.Image = lineImage_red;
+            imageBox1.Image = lineImage_red + lineImage_green + BgrOImage;
+
+            int radian = 90;
+
+            //변경 필수            
+            if (Convert.ToInt32(angle_green) >= 66)
+            {
+                Graphics gr;
+                gr = pictureBox1.CreateGraphics();
+                Pen pen1 = new Pen(Color.Blue, 10);
+                pen1.StartCap = LineCap.NoAnchor; //Line의 시작점 모양 변경 
+                pen1.EndCap = LineCap.ArrowAnchor; //Line의 끝점 모양 변경 
+                gr.DrawLine(pen1, 23, 55, 23, 22); //Line 그리기
+
+                gr = pictureBox2.CreateGraphics();
+                Pen pen2 = new Pen(Color.Blue, 10);
+                pen2.StartCap = LineCap.NoAnchor; //Line의 시작점 모양 변경 
+                pen2.EndCap = LineCap.NoAnchor; //Line의 끝점 모양 변경 
+                gr.Clear(Color.White);
+            }
+            else if (Convert.ToInt32(angle_green) < 66)
+            {
+                Graphics gr;
+
+                gr = pictureBox2.CreateGraphics();
+                Pen pen2 = new Pen(Color.Blue, 10);
+                pen2.StartCap = LineCap.NoAnchor; //Line의 시작점 모양 변경 
+                pen2.EndCap = LineCap.ArrowAnchor; //Line의 끝점 모양 변경 
+                gr.DrawLine(pen2, 10, 44, 45, 44); //Line 그리기
+
+                gr = pictureBox1.CreateGraphics();
+                Pen pen1 = new Pen(Color.Blue, 10);
+                pen1.StartCap = LineCap.NoAnchor; //Line의 시작점 모양 변경 
+                pen1.EndCap = LineCap.ArrowAnchor; //Line의 끝점 모양 변경 
+                gr.Clear(Color.White);
+
+                CvInvoke.PutText(imageBox1.Image, "rotate angle : " + Convert.ToString(radian - angle_green), new Point(0, 290), FontFace.HersheyComplex, 1, new Bgr(Color.Magenta).MCvScalar);
+            }
+            else
+            {
+            }
+        }
+
+       
+    }
+}
