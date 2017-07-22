@@ -1,0 +1,237 @@
+using Emgu.CV;
+using Emgu.CV.CvEnum;
+using Emgu.CV.Structure;
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using System.Windows.Forms.DataVisualization.Charting;
+
+
+using Windows.Devices.Bluetooth.GenericAttributeProfile;
+using Windows.Devices.Enumeration;
+
+
+using MathWorks.MATLAB.NET.Arrays;
+using MathWorks.MATLAB.NET.Utility;
+using matlab_Readtxt;
+using ZedGraph;
+
+using System.Drawing.Drawing2D;
+
+namespace BLE_PAM
+{
+        
+    public partial class AttitudeControl : Form
+    {       
+        public DeviceInformationCollection m_Ble_Profile_List;
+        public GattDeviceService m_Ble_Service;
+        public IReadOnlyList<GattCharacteristic> m_Ble_Characteristic_List;
+
+        public short ax;
+        public short ay;
+        public short az;
+        public short gx;
+        public short gy;
+        public short gz;
+        public double acc_y, acc_x, acc_z;
+
+        public float a = 0.2f;
+        public double pitch = 0, roll = 0, yaw = 0;
+        public double temp;
+        public double angleYaw;
+
+
+        public const String PETRONE_CUSTOM_SERVICE_UUID = "C320DF00-7891-11E5-8BCF-FEFF819CDC9F";
+
+        public AttitudeControl()
+        {
+            InitializeComponent();
+           
+        }
+
+        public async void TransferBleCommand(byte[] cmd)
+        {
+
+            m_Ble_Profile_List = await DeviceInformation.FindAllAsync(GattDeviceService.GetDeviceSelectorFromUuid(new Guid(PETRONE_CUSTOM_SERVICE_UUID)));
+            m_Ble_Service = await GattDeviceService.FromIdAsync(m_Ble_Profile_List[Petrone_List.SelectedIndex].Id);
+            m_Ble_Characteristic_List = m_Ble_Service.GetAllCharacteristics();
+            m_Ble_Characteristic_List[0].ValueChanged += Value_Changed_Event_Handler;
+            await m_Ble_Characteristic_List[0].WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.Notify);
+            // m_Ble_Characteristic_List[0] is C32DF01
+            // m_Ble_Characteristic_List[1] is C32DF02
+            if (m_Ble_Characteristic_List != null)
+                await m_Ble_Characteristic_List[1].WriteValueAsync(cmd.AsBuffer(), GattWriteOption.WriteWithoutResponse);
+
+            // check Rootin : Flag Petrone Busy 
+            // Timer
+        }
+
+        public async void TransferBleNotifyCommand(byte[] cmd)
+        {
+            m_Ble_Profile_List = await DeviceInformation.FindAllAsync(GattDeviceService.GetDeviceSelectorFromUuid(new Guid(PETRONE_CUSTOM_SERVICE_UUID)));
+            m_Ble_Service = await GattDeviceService.FromIdAsync(m_Ble_Profile_List[Petrone_List.SelectedIndex].Id);
+            m_Ble_Characteristic_List = m_Ble_Service.GetAllCharacteristics();
+            m_Ble_Characteristic_List[0].ValueChanged += Value_Changed_Event_Handler;
+            await m_Ble_Characteristic_List[0].WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.Notify);
+            // m_Ble_Characteristic_List[0] is C32DF01
+            // m_Ble_Characteristic_List[1] is C32DF02
+            if (m_Ble_Characteristic_List != null)
+            {
+                await m_Ble_Characteristic_List[1].WriteValueAsync(cmd.AsBuffer(), GattWriteOption.WriteWithResponse);
+            }
+        }
+
+        //가속도, 자이로 센서 각도값 출력
+        private void AccGyro_Click(object sender, EventArgs e)
+        {
+            TransferBleCommand(new byte[] { 0x11, 0x90, 0x50 });
+        }
+
+        private void timer1_Tick(object sender, EventArgs e)
+        {
+            mySeq++;
+            AccGyro_Click(sender, e);
+            
+            chart1.Series[0].Points.AddXY(0, ax);
+            chart1.Series[1].Points.AddXY(0, ay);
+            chart1.Series[2].Points.AddXY(0, az);
+            chart2.Series[0].Points.AddXY(0, gx);
+            chart2.Series[1].Points.AddXY(0, gz);
+            chart2.Series[2].Points.AddXY(0, gy);
+            chart3.Series[0].Points.AddXY(0, roll);
+            chart3.Series[1].Points.AddXY(0, pitch);
+            chart3.Series[2].Points.AddXY(0, yaw);
+            
+            
+        }
+        long myTick;
+        int mySeq;
+
+        // 실시간으로 그래프와 함께 출력
+        private void btnRT_Click(object sender, EventArgs e)
+        {
+            mySeq = 0;
+            myTick = System.DateTime.Now.Ticks;
+            if (timer1.Enabled == true)
+                timer1.Enabled = false;
+            else { timer1.Enabled = true; }
+        }
+
+        private void AttitudeControl_Load(object sender, EventArgs e)
+        {
+
+        }
+
+        //가속도 센서값 출력
+        private void btnAll_Click(object sender, EventArgs e)
+        {
+            TransferBleCommand(new byte[] { 0x11, 0x90, 0x32 });
+        }
+
+        private void chart1_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void chart2_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void Close_Click(object sender, EventArgs e)
+        {           
+            this.Close();
+        }
+
+        public void Value_Changed_Event_Handler(GattCharacteristic sender, GattValueChangedEventArgs args)
+        {
+            byte[] receivedData = new byte[args.CharacteristicValue.Length];
+            receivedData = args.CharacteristicValue.ToArray();
+
+
+            if (receivedData[0] == 0x32)
+            {
+                richTextBox1.Clear();
+                richTextBox1.AppendText("angleRoll  : " + BitConverter.ToInt16(receivedData, 1) + "\n");
+                richTextBox1.AppendText("anglePitch : " + BitConverter.ToInt16(receivedData, 3) + "\n");
+                richTextBox1.AppendText("angleYaw   : " + BitConverter.ToInt16(receivedData, 5) + "\n");                
+                richTextBox1.AppendText("\r\n");
+            }                                
+
+            if (receivedData[0] == 0x50)
+            {
+                richTextBox1.Clear();
+                richTextBox1.AppendText("AccX       : " + BitConverter.ToInt16(receivedData, 1) + "\n");
+                richTextBox1.AppendText("AccY       : " + BitConverter.ToInt16(receivedData, 3) + "\n");
+                richTextBox1.AppendText("AccZ       : " + BitConverter.ToInt16(receivedData, 5) + "\n");
+                richTextBox1.AppendText("GyroRoll   : " + BitConverter.ToInt16(receivedData, 7) + "\n");
+                richTextBox1.AppendText("GyroPitch  : " + BitConverter.ToInt16(receivedData, 9) + "\n");
+                richTextBox1.AppendText("GyroYaw    : " + BitConverter.ToInt16(receivedData, 11) + "\n");
+                richTextBox1.AppendText("angleRoll  : " + BitConverter.ToInt16(receivedData, 13) + "\n");
+                richTextBox1.AppendText("anglePitch : " + BitConverter.ToInt16(receivedData, 15) + "\n");
+                richTextBox1.AppendText("angleYaw   : " + BitConverter.ToInt16(receivedData, 17) + "\n");
+                richTextBox1.AppendText("\r\n");
+                //FileWrite(receivedData);
+            
+                ax = BitConverter.ToInt16(receivedData, 1);
+                ay = BitConverter.ToInt16(receivedData, 3);
+                az = BitConverter.ToInt16(receivedData, 5);
+                gx = BitConverter.ToInt16(receivedData, 7);
+                gy = BitConverter.ToInt16(receivedData, 9);
+                gz = BitConverter.ToInt16(receivedData, 11);
+                angleYaw = BitConverter.ToInt16(receivedData, 17);
+
+                acc_x = Math.Atan2(ay, az) * 180.0 / Math.PI;
+                acc_y = -Math.Atan2(ax, az) * 180.0 / Math.PI;
+                acc_z = Math.Atan2(ax, ay) * 180.0 / Math.PI;
+
+                temp = (1 / a) * (acc_y - roll) + gy;
+                roll = roll + (temp * 0.1110);
+            
+                temp = (1 / a) * (acc_x - pitch) + gx;
+                pitch = pitch + (temp * 0.1110);
+
+                //temp = (1 / a) * (acc_z - yaw) + gz;
+                //yaw = yaw + (temp * 0.1110);
+
+                yaw = angleYaw;
+                        
+                richTextBox2.Clear();
+                richTextBox2.AppendText("필터 적용 RPY\n");
+                richTextBox2.AppendText("R :" + roll + "\n");
+                richTextBox2.AppendText("P :" + pitch + "\n");
+                richTextBox2.AppendText("Y :" + yaw + "\n");
+                richTextBox2.AppendText("\r\n");
+
+                FileWrite(receivedData);
+
+             }
+        }
+
+        //txt파일 만들기
+        private void FileWrite(byte[] str)
+        {
+            FileStream fs = new FileStream("IMU.txt", FileMode.Append, FileAccess.Write);
+            //FileMode중 append는 이어쓰기. 파일이 없으면 만든다.
+            StreamWriter sw = new StreamWriter(fs, System.Text.Encoding.Default);
+            for (int i = 1; i <= 17; i += 2)
+            {
+                sw.Write(BitConverter.ToInt16(str, i));
+                sw.Write(" ");
+            }
+            sw.Write("\r\n");
+            sw.Flush();
+            sw.Close();
+            fs.Close();
+        }
+
+        private class Petrone_List
+        {
+            public static int SelectedIndex { get; internal set; }
+        }
+    }
+}
